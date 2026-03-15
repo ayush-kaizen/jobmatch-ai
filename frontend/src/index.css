@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface-50 text-surface-900 font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2.5 bg-brand-600 text-white font-medium rounded-xl
+           hover:bg-brand-700 active:scale-[0.98] transition-all duration-150
+           shadow-sm shadow-brand-600/20;
+  }
+  .btn-secondary {
+    @apply px-4 py-2.5 bg-white text-surface-700 font-medium rounded-xl
+           border border-surface-200 hover:bg-surface-50 hover:border-surface-300
+           active:scale-[0.98] transition-all duration-150;
+  }
+  .btn-ghost {
+    @apply px-3 py-2 text-surface-600 font-medium rounded-lg
+           hover:bg-surface-100 active:scale-[0.98] transition-all duration-150;
+  }
+  .card {
+    @apply bg-white rounded-2xl border border-surface-200 shadow-sm;
+  }
+  .input-field {
+    @apply w-full px-4 py-2.5 bg-white border border-surface-200 rounded-xl
+           text-surface-900 placeholder-surface-400
+           focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-400
+           transition-all duration-150;
+  }
+  .tag {
+    @apply inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium;
+  }
+  .tag-brand { @apply bg-brand-100 text-brand-700; }
+  .tag-success { @apply bg-success-light text-success-text; }
+  .tag-warning { @apply bg-warning-light text-warning-text; }
+  .tag-danger { @apply bg-danger-light text-danger-text; }
+  .tag-neutral { @apply bg-surface-100 text-surface-600; }
+
+  .score-ring {
+    @apply w-12 h-12 rounded-full flex items-center justify-center text-sm font-bold;
+  }
+}
