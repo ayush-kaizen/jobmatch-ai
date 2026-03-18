@@ -4,8 +4,6 @@
 
 Built for [GenAI Zurich 2026 Hackathon](https://genaizurich.ch) — Apify Challenge Track
 
----
-
 ## What it does
 
 JobMatch AI flips the job search model. Instead of browsing thousands of listings on cluttered platforms, you:
@@ -14,62 +12,69 @@ JobMatch AI flips the job search model. Instead of browsing thousands of listing
 2. **Add your target companies** — paste the career page URLs of companies you care about
 3. **Hit Scan** — our AI scrapes those career pages, extracts jobs, and ranks them against your profile
 
-You get a **ranked feed of jobs** with match scores, plain-English explanations of why each job fits (or doesn't), skill gap analysis, Coursera course recommendations to bridge those gaps, and one-click cover letter generation.
+You get a **ranked feed of jobs** with match scores, plain-English explanations of why each job fits, skill gap analysis, and one-click cover letter generation.
 
-For each company, you also get an **AI-powered intelligence brief** — recent news, financial highlights, strategic priorities, key products, challenges, and customer base — so you walk into interviews prepared.
+For each company, you also get an **AI-powered intelligence brief** — recent news, financial highlights, strategic priorities, key products, challenges, and customer base.
 
 ## Architecture
-
 ```
-User → React Frontend (Vite + Tailwind)
+User → React Frontend (Vite + Tailwind CSS)
          ↓
        FastAPI Backend
          ↓
-    ┌────┴────┐
-    │  Apify  │ ← Career pages, company websites, Google News, Yahoo Finance, Coursera
-    └────┬────┘
+    ┌────┴─────────────┐
+    │ Direct HTTP       │ ← Career pages, company websites, Google News
+    │ Scraping (httpx)  │
+    └────┬─────────────┘
          ↓
-    OpenRouter LLM ← Job structuring, matching, intel synthesis, cover letters
+    Apify OpenRouter Proxy → LLM (Claude Sonnet)
+         ↓                    ↓
+    Job extraction      Company intel synthesis
+    Job-profile matching    Cover letter generation
          ↓
-      SQLite DB → Ranked results back to frontend
+      SQLite DB → Ranked results → Frontend
 ```
 
-### Data Pipeline (per company scan)
+### Pipeline (per company scan)
 
-1. **Apify Cheerio Scraper** → scrapes career page, extracts raw HTML/text
-2. **Apify Web Scraper** → scrapes company About page + Google News
-3. **Apify Yahoo Finance Actor** → financial data (if public company)
-4. **LLM (via OpenRouter)** → structures raw data into clean job listings
-5. **LLM** → synthesizes company intel brief
-6. **LLM** → scores each job against candidate profile (0-100) with reasoning
-7. **Apify Web Scraper** → scrapes Coursera for skill gap courses
-8. Results saved to SQLite, served to frontend
+1. **Direct HTTP scrape** → fetches career page HTML, extracts text and links
+2. **LLM (via Apify OpenRouter)** → structures raw text into clean job listings (title, location, skills, level)
+3. **Direct HTTP scrape** → fetches company website + Google News results
+4. **LLM** → synthesizes company intel brief (overview, news, priorities, challenges, products)
+5. **LLM** → scores each job against candidate profile (0-100) with reasoning and skill gaps
+6. Results saved to SQLite, served to React frontend
+
+## Features
+
+- **Career Story** — free-text field where candidates express their journey and aspirations, powering smarter AI matching
+- **Smart Job Matching** — LLM scores every job 0-100 against your profile with plain-English reasoning
+- **Skill Gap Analysis** — identifies exactly which skills you're missing for each role
+- **Company Intelligence Briefs** — AI-synthesized overview, news, financials, priorities, challenges, and customer base
+- **Cover Letter Generator** — one-click personalized cover letters using your profile + job requirements + company context
+- **Dashboard** — aggregated stats, top skill gaps across all matches, high-match highlights
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite, Tailwind CSS |
+| Frontend | React 18, Vite, Tailwind CSS, Lucide Icons |
 | Backend | Python FastAPI, SQLite |
-| Scraping | Apify Platform (Cheerio Scraper, Yahoo Finance Actor) |
-| AI | OpenRouter API (Claude / GPT-4) |
+| Scraping | Direct HTTP via httpx (no external scraping service needed) |
+| AI/LLM | Apify OpenRouter Proxy → Claude Sonnet 4 |
 | Fonts | DM Sans, Outfit, JetBrains Mono |
-| Deploy | Vercel (frontend) + Railway (backend) |
 
 ## Setup & Run Locally
 
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- Apify account with API token
-- OpenRouter API key
+- Apify account with API token (for LLM access via OpenRouter proxy)
 
 ### Backend
 ```bash
 cd backend
 pip install -r requirements.txt
-export APIFY_API_TOKEN="your-token"
-export OPENROUTER_API_KEY="your-key"
+export APIFY_API_TOKEN="your-apify-token"
 uvicorn main:app --reload --port 8000
 ```
 
@@ -82,15 +87,6 @@ npm run dev
 
 Open http://localhost:3000
 
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `APIFY_API_TOKEN` | Your Apify API token (get from Apify Console → Settings) |
-| `OPENROUTER_API_KEY` | Your OpenRouter API key |
-| `LLM_MODEL` | LLM model to use (default: `anthropic/claude-sonnet-4`) |
-| `VITE_API_URL` | Backend URL for frontend (production only) |
-
 ## API Endpoints
 
 | Method | Endpoint | Description |
@@ -101,34 +97,27 @@ Open http://localhost:3000
 | POST | `/api/companies` | Add a company |
 | DELETE | `/api/companies/:id` | Remove a company |
 | GET | `/api/companies/:id/intel` | Get company intelligence brief |
-| GET | `/api/jobs` | List all matched jobs |
+| GET | `/api/jobs` | List all matched jobs (sorted by score) |
 | POST | `/api/scan` | Run the full scrape + match pipeline |
 | POST | `/api/jobs/:id/cover-letter` | Generate tailored cover letter |
 | GET | `/api/stats` | Dashboard statistics |
+| GET | `/api/health` | Health check |
 
-## Features
+## How it uses GenAI
 
-### Core
-- ✅ Candidate profile with career story (free-text narrative)
-- ✅ Company watchlist with career page URLs
-- ✅ AI-powered career page scraping and job extraction
-- ✅ Intelligent job-to-profile matching with scores and reasoning
-- ✅ Skill gap analysis per job
-- ✅ Coursera course recommendations for skill gaps
-- ✅ Company intelligence briefs (overview, news, financials, priorities, challenges)
-- ✅ One-click cover letter generation
-- ✅ Dashboard with aggregated stats
+Every core function is powered by LLM:
 
-### Planned
-- [ ] Crunchbase integration for private company data
-- [ ] Earnings call transcript analysis
-- [ ] Scheduled auto-scanning
-- [ ] Email notifications for new high-match jobs
-- [ ] Package as published Apify Actor
+1. **Job Extraction** — raw HTML text → structured JSON job listings
+2. **Company Intel** — website + news text → synthesized intelligence brief
+3. **Job Matching** — candidate profile + job data → match scores with reasoning
+4. **Skill Gap Analysis** — identifies missing skills per job
+5. **Cover Letters** — generates personalized letters using profile + job + company context
+
+All LLM calls go through Apify's OpenRouter proxy, demonstrating deep Apify platform integration.
 
 ## Team
 
-Built by Ayush — MBA student at IMD Business School, Lausanne
+Built by Ayush — MBA candidate, IMD Business School, Lausanne
 
 ## License
 
