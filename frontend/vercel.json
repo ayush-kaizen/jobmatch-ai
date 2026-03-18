@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://YOUR-RAILWAY-URL.up.railway.app/api/:path*"
+      "destination": "https://jobmatch-ai-production-0ea9.up.railway.app/api/:path*"
     }
   ]
 }
