@@ -21,6 +21,17 @@ export const api = {
   // Profile
   getProfile: () => request('/api/profile'),
   updateProfile: (data) => request('/api/profile', { method: 'PUT', body: data }),
+  uploadResume: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const url = `${BASE_URL}/api/profile/upload-resume`;
+    const res = await fetch(url, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Upload failed');
+    }
+    return res.json();
+  },
 
   // Companies
   getCompanies: () => request('/api/companies'),
@@ -41,6 +52,14 @@ export const api = {
   // Cover letter
   generateCoverLetter: (jobId) =>
     request(`/api/jobs/${jobId}/cover-letter`, { method: 'POST' }),
+
+  // Interview prep
+  generateInterviewPrep: (jobId) =>
+    request(`/api/jobs/${jobId}/interview-prep`, { method: 'POST' }),
+
+  // Gap analysis
+  generateGapAnalysis: (jobId) =>
+    request(`/api/jobs/${jobId}/gap-analysis`, { method: 'POST' }),
 
   // Stats
   getStats: () => request('/api/stats'),

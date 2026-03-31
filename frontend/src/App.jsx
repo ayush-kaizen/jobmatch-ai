@@ -4,7 +4,7 @@ import {
   Search, Plus, Trash2, ExternalLink, FileText, Briefcase, Building2,
   User, BarChart3, Radar, Sparkles, ChevronRight, Loader2, X,
   BookOpen, Target, MapPin, Clock, Star, AlertTriangle, CheckCircle2,
-  TrendingUp, ArrowRight, RefreshCw, Zap, GraduationCap
+  TrendingUp, ArrowRight, RefreshCw, Zap, GraduationCap, Upload
 } from 'lucide-react';
 
 // ── Score Ring ──────────────────────────────────────────────────────────────
@@ -81,6 +81,7 @@ function TagInput({ tags, onChange, placeholder }) {
 function ProfilePanel({ profile, onSave }) {
   const [form, setForm] = useState(profile);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => { setForm(profile); }, [profile]);
 
@@ -93,6 +94,20 @@ function ProfilePanel({ profile, onSave }) {
       alert('Error saving: ' + e.message);
     }
     setSaving(false);
+  };
+
+  const handleResumeUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const result = await api.uploadResume(file);
+      setForm({ ...form, career_story: result.career_story });
+    } catch (err) {
+      alert('Error uploading resume: ' + err.message);
+    }
+    setUploading(false);
+    e.target.value = '';
   };
 
   return (
@@ -142,22 +157,77 @@ function ProfilePanel({ profile, onSave }) {
         </div>
       </div>
 
-      <div className="card p-6">
-        <label className="block text-sm font-medium text-surface-700 mb-1.5">
-          <span className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-brand-500" />
-            Career story
-          </span>
-        </label>
-        <p className="text-xs text-surface-400 mb-3">
-          Tell us about your journey, aspirations, and what makes you unique. This helps the AI match you with the right opportunities.
-        </p>
-        <textarea
-          className="input-field min-h-[140px] resize-y"
-          value={form.career_story || ''}
-          onChange={e => setForm({...form, career_story: e.target.value})}
-          placeholder="I've spent 5 years in B2B SaaS sales at companies like Coursera and Mercer, selling software to HR leaders. I'm now pursuing an MBA at IMD in Lausanne and want to transition into product management or strategy consulting in the tech/healthcare space. I'm passionate about using AI to solve real business problems and bring a unique combination of commercial instinct and technical curiosity..."
-        />
+      <div className="card p-6 space-y-5">
+        {/* Resume Upload */}
+        <div>
+          <label className="block text-sm font-medium text-surface-700 mb-1.5">
+            <span className="flex items-center gap-2">
+              <Upload className="w-4 h-4 text-brand-500" />
+              Upload Resume
+            </span>
+          </label>
+          <p className="text-xs text-surface-400 mb-3">
+            Upload your resume (PDF) to automatically generate your career story.
+          </p>
+          <label className={`flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-surface-200 rounded-xl cursor-pointer hover:border-brand-300 hover:bg-brand-50/50 transition-colors ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+            {uploading ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin text-brand-500" />
+                <span className="text-sm text-surface-500">Processing resume...</span>
+              </>
+            ) : (
+              <>
+                <Upload className="w-5 h-5 text-surface-400" />
+                <span className="text-sm text-surface-500">Click to upload PDF</span>
+              </>
+            )}
+            <input
+              type="file"
+              accept=".pdf"
+              onChange={handleResumeUpload}
+              disabled={uploading}
+              className="hidden"
+            />
+          </label>
+        </div>
+
+        {/* Career Story */}
+        <div>
+          <label className="block text-sm font-medium text-surface-700 mb-1.5">
+            <span className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-brand-500" />
+              Career story
+            </span>
+          </label>
+          <p className="text-xs text-surface-400 mb-3">
+            Tell us about your journey, aspirations, and what makes you unique. This helps the AI match you with the right opportunities.
+          </p>
+          <textarea
+            className="input-field min-h-[140px] resize-y"
+            value={form.career_story || ''}
+            onChange={e => setForm({...form, career_story: e.target.value})}
+            placeholder="I've spent 5 years in B2B SaaS sales at companies like Coursera and Mercer, selling software to HR leaders. I'm now pursuing an MBA at IMD in Lausanne and want to transition into product management or strategy consulting in the tech/healthcare space. I'm passionate about using AI to solve real business problems and bring a unique combination of commercial instinct and technical curiosity..."
+          />
+        </div>
+
+        {/* Future Role */}
+        <div>
+          <label className="block text-sm font-medium text-surface-700 mb-1.5">
+            <span className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-brand-500" />
+              Future Role
+            </span>
+          </label>
+          <p className="text-xs text-surface-400 mb-3">
+            What type of role are you seeking next? This helps us understand your career direction.
+          </p>
+          <textarea
+            className="input-field min-h-[100px] resize-y"
+            value={form.future_role || ''}
+            onChange={e => setForm({...form, future_role: e.target.value})}
+            placeholder="What role are you seeking next? E.g., 'I'm looking for a Senior Product Manager role at a growth-stage B2B SaaS company, ideally in the AI/ML space. I want to lead a cross-functional team and drive product strategy for enterprise customers.'"
+          />
+        </div>
       </div>
     </div>
   );
@@ -355,7 +425,7 @@ function IntelPanel({ companyId, companyName, onClose }) {
 
 // ── Job Card ────────────────────────────────────────────────────────────────
 
-function JobCard({ job, onCoverLetter }) {
+function JobCard({ job, onCoverLetter, onInterviewPrep, onGapAnalysis }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -435,10 +505,18 @@ function JobCard({ job, onCoverLetter }) {
                 </div>
               )}
 
-              {/* Cover letter button */}
-              <button onClick={() => onCoverLetter(job.id)} className="btn-secondary text-xs flex items-center gap-1.5 mt-2">
-                <FileText className="w-3 h-3" /> Generate cover letter
-              </button>
+              {/* Action buttons */}
+              <div className="flex flex-wrap gap-2 mt-2">
+                <button onClick={() => onCoverLetter(job.id)} className="btn-secondary text-xs flex items-center gap-1.5">
+                  <FileText className="w-3 h-3" /> Generate cover letter
+                </button>
+                <button onClick={() => onInterviewPrep(job.id)} className="btn-secondary text-xs flex items-center gap-1.5">
+                  <Briefcase className="w-3 h-3" /> Interview prep
+                </button>
+                <button onClick={() => onGapAnalysis(job.id)} className="btn-secondary text-xs flex items-center gap-1.5">
+                  <Target className="w-3 h-3" /> Gap analysis
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -496,6 +574,152 @@ function CoverLetterModal({ open, onClose, jobId }) {
   );
 }
 
+// ── Interview Prep Modal ─────────────────────────────────────────────────────
+
+function InterviewPrepModal({ open, onClose, jobId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !jobId) return;
+    setLoading(true);
+    setData(null);
+    api.generateInterviewPrep(jobId)
+      .then(setData)
+      .catch(e => setData({ error: e.message }))
+      .finally(() => setLoading(false));
+  }, [open, jobId]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="card p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-bold text-lg">
+            {data ? `Interview prep — ${data.job_title} at ${data.company_name}` : 'Generating interview prep...'}
+          </h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-surface-100"><X className="w-5 h-5" /></button>
+        </div>
+        {loading ? (
+          <div className="py-12 text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />
+            <p className="text-sm text-surface-500">Generating interview questions...</p>
+          </div>
+        ) : data?.error ? (
+          <div className="py-8 text-center text-red-500">{data.error}</div>
+        ) : (
+          <div className="space-y-6">
+            <div>
+              <h4 className="font-semibold text-surface-700 mb-3 flex items-center gap-2">
+                <Briefcase className="w-4 h-4 text-brand-500" /> Role-specific questions
+              </h4>
+              <ul className="space-y-2">
+                {(data?.role_questions || []).map((q, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-surface-600 bg-surface-50 p-3 rounded-lg">
+                    <span className="text-brand-500 font-semibold">{i + 1}.</span> {q}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold text-surface-700 mb-3 flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-brand-500" /> Company-specific questions
+              </h4>
+              <ul className="space-y-2">
+                {(data?.company_questions || []).map((q, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-surface-600 bg-surface-50 p-3 rounded-lg">
+                    <span className="text-brand-500 font-semibold">{i + 1}.</span> {q}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Gap Analysis Modal ───────────────────────────────────────────────────────
+
+function GapAnalysisModal({ open, onClose, jobId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !jobId) return;
+    setLoading(true);
+    setData(null);
+    api.generateGapAnalysis(jobId)
+      .then(setData)
+      .catch(e => setData({ error: e.message }))
+      .finally(() => setLoading(false));
+  }, [open, jobId]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="card p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-bold text-lg">
+            {data ? `Gap analysis — ${data.job_title} at ${data.company_name}` : 'Analyzing gaps...'}
+          </h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-surface-100"><X className="w-5 h-5" /></button>
+        </div>
+        {loading ? (
+          <div className="py-12 text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-brand-500 mx-auto mb-3" />
+            <p className="text-sm text-surface-500">Analyzing your profile against this role...</p>
+          </div>
+        ) : data?.error ? (
+          <div className="py-8 text-center text-red-500">{data.error}</div>
+        ) : (
+          <div className="space-y-6">
+            <div>
+              <h4 className="font-semibold text-surface-700 mb-3 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Current strengths
+              </h4>
+              <ul className="space-y-2">
+                {(data?.current_strengths || []).map((s, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-surface-600 bg-emerald-50 p-3 rounded-lg">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" /> {s}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold text-surface-700 mb-3 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-500" /> Gaps to address
+              </h4>
+              <ul className="space-y-2">
+                {(data?.gaps || []).map((g, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-surface-600 bg-amber-50 p-3 rounded-lg">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" /> {g}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold text-surface-700 mb-3 flex items-center gap-2">
+                <Target className="w-4 h-4 text-brand-500" /> Recommendations
+              </h4>
+              <ul className="space-y-2">
+                {(data?.recommendations || []).map((r, i) => (
+                  <li key={i} className="flex gap-2 text-sm text-surface-600 bg-brand-50 p-3 rounded-lg">
+                    <ArrowRight className="w-4 h-4 text-brand-500 shrink-0 mt-0.5" /> {r}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //   MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
@@ -518,6 +742,8 @@ export default function App() {
   const [showAddCompany, setShowAddCompany] = useState(false);
   const [intelCompany, setIntelCompany] = useState(null);
   const [coverLetterJobId, setCoverLetterJobId] = useState(null);
+  const [interviewPrepJobId, setInterviewPrepJobId] = useState(null);
+  const [gapAnalysisJobId, setGapAnalysisJobId] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -674,7 +900,7 @@ export default function App() {
                 </div>
                 <div className="space-y-3">
                   {jobs.slice(0, 3).map(j => (
-                    <JobCard key={j.id} job={j} onCoverLetter={setCoverLetterJobId} />
+                    <JobCard key={j.id} job={j} onCoverLetter={setCoverLetterJobId} onInterviewPrep={setInterviewPrepJobId} onGapAnalysis={setGapAnalysisJobId} />
                   ))}
                 </div>
               </div>
@@ -741,7 +967,7 @@ export default function App() {
             ) : (
               <div className="space-y-3">
                 {jobs.map(j => (
-                  <JobCard key={j.id} job={j} onCoverLetter={setCoverLetterJobId} />
+                  <JobCard key={j.id} job={j} onCoverLetter={setCoverLetterJobId} onInterviewPrep={setInterviewPrepJobId} onGapAnalysis={setGapAnalysisJobId} />
                 ))}
               </div>
             )}
@@ -752,6 +978,8 @@ export default function App() {
       {/* Modals */}
       <AddCompanyModal open={showAddCompany} onClose={() => setShowAddCompany(false)} onCreated={fetchAll} />
       <CoverLetterModal open={!!coverLetterJobId} onClose={() => setCoverLetterJobId(null)} jobId={coverLetterJobId} />
+      <InterviewPrepModal open={!!interviewPrepJobId} onClose={() => setInterviewPrepJobId(null)} jobId={interviewPrepJobId} />
+      <GapAnalysisModal open={!!gapAnalysisJobId} onClose={() => setGapAnalysisJobId(null)} jobId={gapAnalysisJobId} />
     </div>
   );
 }

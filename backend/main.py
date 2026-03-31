@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
+import PyPDF2
+import io
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -27,12 +29,18 @@ def get_db():
 def init_db():
     conn = get_db()
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS candidate_profile (id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT DEFAULT '', skills TEXT DEFAULT '[]', target_roles TEXT DEFAULT '[]', experience_level TEXT DEFAULT 'mid', preferred_locations TEXT DEFAULT '[]', career_story TEXT DEFAULT '', updated_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE IF NOT EXISTS candidate_profile (id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT DEFAULT '', skills TEXT DEFAULT '[]', target_roles TEXT DEFAULT '[]', experience_level TEXT DEFAULT 'mid', preferred_locations TEXT DEFAULT '[]', career_story TEXT DEFAULT '', future_role TEXT DEFAULT '', updated_at TEXT DEFAULT (datetime('now')));
         CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, career_page_url TEXT NOT NULL, website_url TEXT DEFAULT '', ticker_symbol TEXT DEFAULT '', logo_url TEXT DEFAULT '', intel_summary TEXT DEFAULT '', last_scraped_at TEXT, created_at TEXT DEFAULT (datetime('now')));
         CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL, title TEXT NOT NULL, location TEXT DEFAULT '', job_type TEXT DEFAULT '', experience_level TEXT DEFAULT '', required_skills TEXT DEFAULT '[]', description_snippet TEXT DEFAULT '', job_url TEXT DEFAULT '', match_score REAL DEFAULT 0, match_reasoning TEXT DEFAULT '', skill_gaps TEXT DEFAULT '[]', coursera_courses TEXT DEFAULT '[]', raw_text TEXT DEFAULT '', scraped_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS company_intel (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL UNIQUE, overview TEXT DEFAULT '', recent_news TEXT DEFAULT '[]', financials TEXT DEFAULT '', strategic_priorities TEXT DEFAULT '', key_products TEXT DEFAULT '', challenges TEXT DEFAULT '', customer_base TEXT DEFAULT '', raw_data TEXT DEFAULT '', updated_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE);
         INSERT OR IGNORE INTO candidate_profile (id) VALUES (1);
     """)
+    # Migration: add future_role column if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE candidate_profile ADD COLUMN future_role TEXT DEFAULT ''")
+        conn.commit()
+    except:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -51,6 +59,7 @@ class CandidateProfileUpdate(BaseModel):
     experience_level: Optional[str] = None
     preferred_locations: Optional[list[str]] = None
     career_story: Optional[str] = None
+    future_role: Optional[str] = None
 
 class CompanyCreate(BaseModel):
     name: str
@@ -113,11 +122,11 @@ async def extract_jobs(company_name, career_url):
     text = page["bodyText"]
     if len(text.strip()) < 100:
         return []
-    prompt = f"""Analyze the career page of {company_name}. Extract up to 10 jobs.
-For each: title, location (or Remote), job_type, experience_level, required_skills (3-5), description_snippet (1 sentence), job_url.
+    prompt = f"""Analyze the career page of {company_name}. Extract up to 30 jobs.
+For each: title, location (or Remote), job_type, experience_level, required_skills (3-5), description_snippet (1 short sentence), job_url.
 Return ONLY JSON array. No jobs = [].
 
-Text: {text[:8000]}
+Text: {text[:12000]}
 
 Links: {json.dumps(page["links"][:30])}"""
     try:
@@ -216,6 +225,29 @@ def update_profile(data: CandidateProfileUpdate):
     p = dict(row)
     for f in ["skills","target_roles","preferred_locations"]: p[f] = pjf(p.get(f))
     return p
+
+@app.post("/api/profile/upload-resume")
+async def upload_resume(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(400, "Only PDF files are accepted")
+    try:
+        content = await file.read()
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        if len(text.strip()) < 50:
+            raise HTTPException(400, "Could not extract text from PDF")
+        prompt = f"""Based on this resume, write a 3-4 sentence career story summarizing this person's experience and career trajectory. Focus on their key skills, industries, notable achievements, and career progression. Write in first person.
+
+Resume text:
+{text[:8000]}"""
+        career_story = await call_llm("Write a concise career story from a resume. Write in first person, 3-4 sentences.", prompt, 500)
+        return {"career_story": career_story.strip()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error processing PDF: {str(e)}")
 
 @app.get("/api/companies")
 def list_companies():
@@ -352,6 +384,73 @@ Needs: {json.dumps(job.get("required_skills",[]))}
 Company: {json.dumps(intel)[:1000] if intel else "N/A"}"""
     letter = await call_llm("Write personalized cover letters.", prompt, 1500)
     return {"cover_letter": letter, "job_title": job["title"], "company_name": job["company_name"]}
+
+@app.post("/api/jobs/{job_id}/interview-prep")
+async def create_interview_prep(job_id: int):
+    conn = get_db()
+    jr = conn.execute("SELECT j.*,c.name as company_name FROM jobs j JOIN companies c ON c.id=j.company_id WHERE j.id=?", (job_id,)).fetchone()
+    if not jr: conn.close(); raise HTTPException(404, "Job not found")
+    job = dict(jr); job["required_skills"] = pjf(job.get("required_skills"))
+    prof = dict(conn.execute("SELECT * FROM candidate_profile WHERE id=1").fetchone())
+    for f in ["skills","target_roles","preferred_locations"]: prof[f] = pjf(prof.get(f))
+    ir = conn.execute("SELECT * FROM company_intel WHERE company_id=?", (job["company_id"],)).fetchone()
+    intel = dict(ir) if ir else {}
+    conn.close()
+    prompt = f"""Generate interview preparation questions for a candidate applying to this role.
+Return ONLY valid JSON with two arrays:
+{{"role_questions": ["question1", "question2", ...], "company_questions": ["question1", "question2", ...]}}
+
+Generate 5 questions specific to the ROLE (technical skills, job responsibilities, experience).
+Generate 5 questions specific to the COMPANY (culture, strategy, recent news, why this company).
+
+Candidate: {prof.get("name","Candidate")}, {prof.get("experience_level","mid")} level
+Skills: {json.dumps(prof.get("skills",[]))}
+Story: {prof.get("career_story","")[:400]}
+
+Job: {job.get("title","")} at {job.get("company_name","")} ({job.get("location","")})
+Required skills: {json.dumps(job.get("required_skills",[]))}
+Description: {job.get("description_snippet","")}
+
+Company Intel: {json.dumps(intel)[:1500] if intel else "N/A"}"""
+    resp = await call_llm("Generate targeted interview questions. Return ONLY valid JSON.", prompt, 2000)
+    try:
+        parsed = json.loads(clean_json(resp))
+        return {"role_questions": parsed.get("role_questions", []), "company_questions": parsed.get("company_questions", []), "job_title": job["title"], "company_name": job["company_name"]}
+    except:
+        return {"role_questions": [], "company_questions": [], "job_title": job["title"], "company_name": job["company_name"], "error": "Failed to parse questions"}
+
+@app.post("/api/jobs/{job_id}/gap-analysis")
+async def create_gap_analysis(job_id: int):
+    conn = get_db()
+    jr = conn.execute("SELECT j.*,c.name as company_name FROM jobs j JOIN companies c ON c.id=j.company_id WHERE j.id=?", (job_id,)).fetchone()
+    if not jr: conn.close(); raise HTTPException(404, "Job not found")
+    job = dict(jr); job["required_skills"] = pjf(job.get("required_skills"))
+    prof = dict(conn.execute("SELECT * FROM candidate_profile WHERE id=1").fetchone())
+    for f in ["skills","target_roles","preferred_locations"]: prof[f] = pjf(prof.get(f))
+    conn.close()
+    prompt = f"""Analyze the gap between this candidate's current experience and the target role.
+Return ONLY valid JSON:
+{{"current_strengths": ["strength1", "strength2", ...], "gaps": ["gap1", "gap2", ...], "recommendations": ["recommendation1", "recommendation2", ...]}}
+
+Provide 3-5 current strengths that align with the role.
+Provide 3-5 gaps or areas where the candidate needs development.
+Provide 3-5 actionable recommendations to bridge the gaps.
+
+Candidate: {prof.get("name","Candidate")}, {prof.get("experience_level","mid")} level
+Skills: {json.dumps(prof.get("skills",[]))}
+Career Story: {prof.get("career_story","")[:600]}
+Future Role: {prof.get("future_role","")[:200]}
+
+Target Job: {job.get("title","")} at {job.get("company_name","")}
+Location: {job.get("location","")}
+Required skills: {json.dumps(job.get("required_skills",[]))}
+Description: {job.get("description_snippet","")}"""
+    resp = await call_llm("Analyze career gaps. Return ONLY valid JSON.", prompt, 2000)
+    try:
+        parsed = json.loads(clean_json(resp))
+        return {"current_strengths": parsed.get("current_strengths", []), "gaps": parsed.get("gaps", []), "recommendations": parsed.get("recommendations", []), "job_title": job["title"], "company_name": job["company_name"]}
+    except:
+        return {"current_strengths": [], "gaps": [], "recommendations": [], "job_title": job["title"], "company_name": job["company_name"], "error": "Failed to parse analysis"}
 
 @app.get("/api/stats")
 def get_stats():
