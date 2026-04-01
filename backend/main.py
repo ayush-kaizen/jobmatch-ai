@@ -1,6 +1,6 @@
 """
-JobMatch AI — FastAPI Backend (v5 — Direct Scraping)
-Uses direct HTTP requests for web scraping (no Apify Actors needed).
+JobMatch AI — FastAPI Backend (v7 — Hybrid Scraping)
+Uses direct HTTP requests for web scraping with Apify fallback for JS-rendered pages.
 Uses Apify's OpenRouter proxy for LLM calls (charges to Apify credits).
 """
 
@@ -122,11 +122,100 @@ async def scrape_page(url):
         print(f"[WARN] scrape({url}): {e}")
         return {"url": url, "title": "", "bodyText": "", "links": []}
 
-async def extract_jobs(company_name, career_url):
-    page = await scrape_page(career_url)
+async def scrape_page_apify(url):
+    """Fallback scraper using Apify Website Content Crawler for JS-rendered pages."""
+    if not APIFY_API_TOKEN:
+        print("[WARN] APIFY_API_TOKEN not set, skipping Apify scraper")
+        return {"url": url, "title": "", "bodyText": "", "links": []}
+
+    print(f"[APIFY] Starting Website Content Crawler for {url}")
+    api_url = f"https://api.apify.com/v2/acts/apify~website-content-crawler/runs?token={APIFY_API_TOKEN}"
+    payload = {
+        "startUrls": [{"url": url}],
+        "crawlerType": "cheerio",
+        "maxCrawlPages": 3,
+        "maxCrawlDepth": 1,
+        "maxRequestRetries": 2
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Start the run
+            resp = await client.post(api_url, json=payload)
+
+            # Handle 402 Payment Required - wait and retry once
+            if resp.status_code == 402:
+                print("[APIFY] 402 error, waiting 15s and retrying...")
+                await asyncio.sleep(15)
+                resp = await client.post(api_url, json=payload)
+
+            if resp.status_code != 201:
+                print(f"[WARN] Apify start failed: {resp.status_code} {resp.text[:200]}")
+                return {"url": url, "title": "", "bodyText": "", "links": []}
+
+            run_data = resp.json()["data"]
+            run_id = run_data["id"]
+            print(f"[APIFY] Run started: {run_id}")
+
+            # Poll for completion (max 90 seconds)
+            status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_API_TOKEN}"
+            for _ in range(18):  # 18 x 5s = 90s max
+                await asyncio.sleep(5)
+                status_resp = await client.get(status_url)
+                if status_resp.status_code != 200:
+                    continue
+                status = status_resp.json()["data"]["status"]
+                print(f"[APIFY] Status: {status}")
+                if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+                    break
+
+            if status != "SUCCEEDED":
+                print(f"[WARN] Apify run did not succeed: {status}")
+                return {"url": url, "title": "", "bodyText": "", "links": []}
+
+            # Fetch results from dataset
+            dataset_id = run_data["defaultDatasetId"]
+            dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_API_TOKEN}"
+            dataset_resp = await client.get(dataset_url)
+
+            if dataset_resp.status_code != 200:
+                print(f"[WARN] Apify dataset fetch failed: {dataset_resp.status_code}")
+                return {"url": url, "title": "", "bodyText": "", "links": []}
+
+            items = dataset_resp.json()
+            if not items:
+                print("[WARN] Apify returned empty dataset")
+                return {"url": url, "title": "", "bodyText": "", "links": []}
+
+            # Combine text from all crawled pages
+            combined_text = ""
+            all_links = []
+            for item in items[:5]:  # Limit to first 5 pages
+                text = item.get("text", "") or ""
+                combined_text += text + "\n\n"
+                # Extract links from crawled URLs
+                page_url = item.get("url", "")
+                if page_url and page_url != url:
+                    # Try to extract title from the text
+                    title = page_url.split("/")[-1].replace("-", " ").replace("_", " ")[:100]
+                    all_links.append({"href": page_url, "text": title})
+
+            print(f"[APIFY] Got {len(items)} pages, {len(combined_text)} chars")
+            return {
+                "url": url,
+                "title": items[0].get("title", "") if items else "",
+                "bodyText": combined_text[:15000],
+                "links": all_links[:50]
+            }
+
+    except Exception as e:
+        print(f"[ERROR] Apify scraper failed: {e}")
+        return {"url": url, "title": "", "bodyText": "", "links": []}
+
+async def extract_jobs_from_page(company_name, page):
+    """Extract jobs from a scraped page using LLM."""
     text = page["bodyText"]
     if len(text.strip()) < 100:
-        print(f"[WARN] {company_name}: insufficient page content")
         return []
     prompt = f"""Analyze the career page of {company_name}. Extract up to 30 jobs.
 For each: title, location (or Remote), job_type, experience_level, required_skills (3-5), description_snippet (1 short sentence), job_url.
@@ -141,12 +230,38 @@ Links: {json.dumps(page["links"][:30])}"""
             return []
         parsed = json.loads(clean_json(resp))
         if isinstance(parsed, list):
-            print(f"[OK] {len(parsed)} jobs from {company_name}")
             return parsed
         return []
     except Exception as e:
-        print(f"[WARN] extract_jobs({company_name}): {e}")
+        print(f"[WARN] extract_jobs_from_page({company_name}): {e}")
         return []
+
+async def extract_jobs(company_name, career_url):
+    # First try direct HTTP scraping
+    print(f"[1a] Trying direct HTTP scrape...")
+    page = await scrape_page(career_url)
+    text = page["bodyText"]
+
+    jobs = []
+    if len(text.strip()) >= 100:
+        jobs = await extract_jobs_from_page(company_name, page)
+        if jobs:
+            print(f"[OK] {len(jobs)} jobs from {company_name} (direct)")
+            return jobs
+
+    # Fallback to Apify if direct scraping got insufficient content or no jobs
+    print(f"[1b] Direct scrape insufficient ({len(text)} chars, {len(jobs)} jobs), trying Apify fallback...")
+    apify_page = await scrape_page_apify(career_url)
+    apify_text = apify_page["bodyText"]
+
+    if len(apify_text.strip()) >= 100:
+        jobs = await extract_jobs_from_page(company_name, apify_page)
+        if jobs:
+            print(f"[OK] {len(jobs)} jobs from {company_name} (Apify)")
+            return jobs
+
+    print(f"[WARN] {company_name}: no jobs found from either method")
+    return []
 
 async def build_intel(company_name, website_url, ticker):
     fallback_intel = {"overview": f"Company information for {company_name}", "recent_news": [], "financials": "", "strategic_priorities": "", "key_products": "", "challenges": "", "customer_base": ""}
@@ -482,4 +597,4 @@ def get_stats():
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","version":"v6-reliable-scanning","timestamp":datetime.now(timezone.utc).isoformat()}
+    return {"status":"ok","version":"v7-hybrid-scraping","timestamp":datetime.now(timezone.utc).isoformat()}
