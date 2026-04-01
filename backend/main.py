@@ -70,16 +70,21 @@ class CompanyCreate(BaseModel):
 class ScanRequest(BaseModel):
     company_ids: Optional[list[int]] = None
 
-async def call_llm(system_prompt, user_prompt, max_tokens=4000):
+async def call_llm(system_prompt, user_prompt, max_tokens=4000, fallback=None):
     if not APIFY_API_TOKEN:
-        raise ValueError("APIFY_API_TOKEN not set")
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post("https://openrouter.apify.actor/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {APIFY_API_TOKEN}", "Content-Type": "application/json"},
-            json={"model": LLM_MODEL, "max_tokens": max_tokens, "messages": [
-                {"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]})
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        print("[WARN] APIFY_API_TOKEN not set, returning fallback")
+        return fallback if fallback is not None else ""
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post("https://openrouter.apify.actor/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {APIFY_API_TOKEN}", "Content-Type": "application/json"},
+                json={"model": LLM_MODEL, "max_tokens": max_tokens, "messages": [
+                    {"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]})
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[ERROR] LLM call failed: {e}")
+        return fallback if fallback is not None else ""
 
 def clean_json(text):
     text = text.strip()
@@ -107,20 +112,21 @@ def get_links(html, base_url):
 async def scrape_page(url):
     hdrs = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"}
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=hdrs)
             resp.raise_for_status()
             html = resp.text
             tm = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE|re.DOTALL)
             return {"url": url, "title": strip_html(tm.group(1)) if tm else "", "bodyText": strip_html(html)[:15000], "links": get_links(html, url)}
     except Exception as e:
-        print(f"[ERROR] scrape({url}): {e}")
+        print(f"[WARN] scrape({url}): {e}")
         return {"url": url, "title": "", "bodyText": "", "links": []}
 
 async def extract_jobs(company_name, career_url):
     page = await scrape_page(career_url)
     text = page["bodyText"]
     if len(text.strip()) < 100:
+        print(f"[WARN] {company_name}: insufficient page content")
         return []
     prompt = f"""Analyze the career page of {company_name}. Extract up to 30 jobs.
 For each: title, location (or Remote), job_type, experience_level, required_skills (3-5), description_snippet (1 short sentence), job_url.
@@ -130,17 +136,20 @@ Text: {text[:12000]}
 
 Links: {json.dumps(page["links"][:30])}"""
     try:
-        resp = await call_llm("Extract jobs as JSON array. No markdown.", prompt, 4000)
+        resp = await call_llm("Extract jobs as JSON array. No markdown.", prompt, 4000, fallback="[]")
+        if not resp or resp == "[]":
+            return []
         parsed = json.loads(clean_json(resp))
         if isinstance(parsed, list):
             print(f"[OK] {len(parsed)} jobs from {company_name}")
             return parsed
         return []
     except Exception as e:
-        print(f"[ERROR] extract_jobs({company_name}): {e}")
+        print(f"[WARN] extract_jobs({company_name}): {e}")
         return []
 
 async def build_intel(company_name, website_url, ticker):
+    fallback_intel = {"overview": f"Company information for {company_name}", "recent_news": [], "financials": "", "strategic_priorities": "", "key_products": "", "challenges": "", "customer_base": ""}
     try:
         site_text = ""
         if website_url:
@@ -158,15 +167,15 @@ async def build_intel(company_name, website_url, ticker):
 Website: {site_text[:3000]}
 News: {news_text[:1500]}
 Ticker: {ticker or "Private"}"""
-        resp = await call_llm("Company intel. ONLY valid JSON.", prompt, 3000)
+        resp = await call_llm("Company intel. ONLY valid JSON.", prompt, 3000, fallback=json.dumps(fallback_intel))
         parsed = json.loads(clean_json(resp))
         if isinstance(parsed, dict):
             print(f"[OK] Intel for {company_name}")
             return parsed
-        return {"overview": "Parse error"}
+        return fallback_intel
     except Exception as e:
-        print(f"[ERROR] intel({company_name}): {e}")
-        return {"overview": f"Error: {str(e)[:80]}"}
+        print(f"[WARN] intel({company_name}): {e}")
+        return fallback_intel
 
 async def match_jobs(jobs, profile):
     if not jobs:
@@ -181,16 +190,19 @@ Story: {profile.get("career_story","N/A")[:400]}
 
 JOBS: {json.dumps(jobs[:10])}"""
     try:
-        resp = await call_llm("Career matcher. ONLY valid JSON array.", prompt, 4000)
-        parsed = json.loads(clean_json(resp))
-        if isinstance(parsed, list):
-            print(f"[OK] Matched {len(parsed)} jobs")
-            return parsed
+        resp = await call_llm("Career matcher. ONLY valid JSON array.", prompt, 4000, fallback="[]")
+        if resp and resp != "[]":
+            parsed = json.loads(clean_json(resp))
+            if isinstance(parsed, list) and len(parsed) > 0:
+                print(f"[OK] Matched {len(parsed)} jobs")
+                return parsed
     except Exception as e:
-        print(f"[ERROR] match: {e}")
+        print(f"[WARN] match: {e}")
+    # Fallback: return jobs with default scores
+    print(f"[WARN] Using fallback scoring for {len(jobs)} jobs")
     for j in jobs:
         j.setdefault("match_score", 50)
-        j.setdefault("match_reasoning", "Auto-scored")
+        j.setdefault("match_reasoning", "Auto-scored (LLM unavailable)")
         j.setdefault("skill_gaps", [])
     return jobs
 
@@ -360,7 +372,9 @@ async def run_scan(data: ScanRequest):
             print(f"[ERROR] {nm}: {e}")
             traceback.print_exc()
             res["errors"].append({"company": nm, "error": str(e)})
-        if len(comps) > 1: await asyncio.sleep(3)
+            # Continue with next company instead of stopping
+        # Rate limiting delay between companies
+        await asyncio.sleep(2)
     print(f"\n[COMPLETE] {res}")
     return res
 
@@ -468,4 +482,4 @@ def get_stats():
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","version":"v5-direct-scraping","timestamp":datetime.now(timezone.utc).isoformat()}
+    return {"status":"ok","version":"v6-reliable-scanning","timestamp":datetime.now(timezone.utc).isoformat()}
