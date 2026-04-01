@@ -120,6 +120,32 @@ def clean_json(text):
                     break
         if end_idx != -1:
             text = text[:end_idx + 1]
+    # Try to parse, if fails attempt partial recovery
+    try:
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
+        # Attempt to recover partial results from truncated JSON
+        # Find the last complete object by looking for "}," or "}"
+        last_complete = text.rfind("},")
+        if last_complete != -1:
+            recovered = text[:last_complete + 1] + "]"
+            try:
+                json.loads(recovered)
+                print(f"[INFO] Recovered partial JSON: {last_complete + 1} chars")
+                return recovered
+            except:
+                pass
+        # Try finding last "}" and wrapping
+        last_brace = text.rfind("}")
+        if last_brace != -1 and text.startswith("["):
+            recovered = text[:last_brace + 1] + "]"
+            try:
+                json.loads(recovered)
+                print(f"[INFO] Recovered partial JSON at brace: {last_brace + 1} chars")
+                return recovered
+            except:
+                pass
     return text if text else "[]"
 
 def strip_html(html):
@@ -164,17 +190,17 @@ async def extract_jobs(company_name, career_url):
 
     print(f"[INFO] {company_name}: scraped {len(text)} chars, {len(links)} links")
 
-    prompt = f"""Analyze the career page of {company_name}. Extract up to 30 jobs.
+    prompt = f"""Analyze the career page of {company_name}. Extract up to 8 jobs.
 
 IMPORTANT: Look carefully for job titles, departments, and locations. On Greenhouse pages, jobs are listed as links with job titles. Extract ALL job listings even if they appear as simple text links.
 
-For each job found, provide:
+Keep each job entry very compact:
 - title: The job title
 - location: City/country or "Remote"
 - job_type: Full-time, Part-time, Contract, or Intern
 - experience_level: Entry, Mid, Senior, Lead, or Director
-- required_skills: Array of 3-5 key skills (infer from title if not explicit)
-- description_snippet: 1 short sentence describing the role
+- required_skills: Array of max 3 key skills (infer from title if not explicit)
+- description_snippet: Under 10 words describing the role
 - job_url: The URL to apply (from the links provided)
 
 Return ONLY a JSON array. If no jobs found, return [].
@@ -186,7 +212,7 @@ Links on page:
 {json.dumps(links[:50])}"""
 
     try:
-        resp = await call_llm("You are a job listing extractor. Extract all jobs from career pages. Return ONLY valid JSON array, no markdown.", prompt, 4000, fallback="[]")
+        resp = await call_llm("You are a job listing extractor. Extract jobs from career pages. Return ONLY valid JSON array, no markdown.", prompt, 3000, fallback="[]")
         if not resp:
             print(f"[WARN] {company_name}: LLM returned empty response")
             return []
