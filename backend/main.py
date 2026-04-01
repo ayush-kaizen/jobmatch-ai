@@ -87,10 +87,40 @@ async def call_llm(system_prompt, user_prompt, max_tokens=4000, fallback=None):
         return fallback if fallback is not None else ""
 
 def clean_json(text):
+    if not text:
+        return "[]"
     text = text.strip()
+    # Remove markdown code blocks
     if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return text
+        lines = text.split("\n")
+        # Remove first line (```json or ```)
+        lines = lines[1:]
+        # Remove last line if it's ```
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    # Try to find JSON array in the text
+    if not text.startswith("["):
+        # Look for array start
+        arr_start = text.find("[")
+        if arr_start != -1:
+            text = text[arr_start:]
+    # Try to find the end of the array
+    if text.startswith("["):
+        # Find matching bracket
+        depth = 0
+        end_idx = -1
+        for i, c in enumerate(text):
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        if end_idx != -1:
+            text = text[:end_idx + 1]
+    return text if text else "[]"
 
 def strip_html(html):
     t = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL|re.IGNORECASE)
@@ -157,13 +187,23 @@ Links on page:
 
     try:
         resp = await call_llm("You are a job listing extractor. Extract all jobs from career pages. Return ONLY valid JSON array, no markdown.", prompt, 4000, fallback="[]")
-        if not resp or resp == "[]":
-            print(f"[WARN] {company_name}: LLM returned no jobs")
+        if not resp:
+            print(f"[WARN] {company_name}: LLM returned empty response")
             return []
-        parsed = json.loads(clean_json(resp))
+        print(f"[DEBUG] {company_name}: LLM response length={len(resp)}, first 200 chars: {resp[:200]}")
+        cleaned = clean_json(resp)
+        if not cleaned or cleaned == "[]":
+            print(f"[WARN] {company_name}: cleaned JSON is empty")
+            return []
+        parsed = json.loads(cleaned)
         if isinstance(parsed, list):
             print(f"[OK] {len(parsed)} jobs from {company_name}")
             return parsed
+        print(f"[WARN] {company_name}: parsed result is not a list")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"[WARN] extract_jobs({company_name}): JSON parse error: {e}")
+        print(f"[DEBUG] Cleaned JSON (first 500 chars): {clean_json(resp)[:500] if resp else 'None'}")
         return []
     except Exception as e:
         print(f"[WARN] extract_jobs({company_name}): {e}")
